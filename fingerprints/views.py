@@ -153,19 +153,22 @@ class FingerprintViewSet(viewsets.ModelViewSet):
             
             # 记录日志
             log_action(request.user, "submit_fingerprint", None, 
-                      "success" if result['failed'] == 0 else "info", 
-                      f"批量提交指纹: 成功 {result['successful']}, 失败 {result['failed']}")
+                      "success",
+                      f"批量提交指纹: 成功 {result['successful']}, 跳过 {result['skipped']}")
             
-            success = result['failed'] == 0
             message = f"成功添加 {result['successful']} 条指纹数据"
-            if not success:
-                message = "部分指纹数据添加失败"
+            if result['skipped'] > 0:
+                message += f", 跳过 {result['skipped']} 条已存在的指纹"
             
             return Response({
-                "success": success,
+                "success": True,
                 "message": message,
-                "results": result
-            }, status=status.HTTP_200_OK if success else status.HTTP_207_MULTI_STATUS)
+                "results": {
+                    "total": result['total'],
+                    "successful": result['successful'],
+                    "skipped": result['skipped']
+                }
+            }, status=status.HTTP_200_OK)
         
         return Response({
             "detail": "请求格式错误",

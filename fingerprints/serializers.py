@@ -67,22 +67,24 @@ class BatchFingerprintSubmitSerializer(serializers.Serializer):
         result = {
             'total': len(fingerprints_data),
             'successful': 0,
-            'failed': 0,
-            'failed_items': []
+            'skipped': 0
         }
         
         for fingerprint_data in fingerprints_data:
-            try:
+            # 检查指纹是否已存在
+            keyword = fingerprint_data.get('keyword')
+            component = fingerprint_data.get('component')
+            existing = Fingerprint.objects.filter(keyword=keyword, component=component).exists()
+            
+            if existing:
+                # 如果指纹已存在，记录为跳过
+                result['skipped'] += 1
+            else:
+                # 如果指纹不存在，创建新的指纹
                 Fingerprint.objects.create(
                     submitter=user,
                     **fingerprint_data
                 )
                 result['successful'] += 1
-            except Exception as e:
-                result['failed'] += 1
-                result['failed_items'].append({
-                    **fingerprint_data,
-                    'error': str(e)
-                })
                 
         return result 
