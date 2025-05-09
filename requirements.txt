@@ -1,0 +1,28 @@
+# 核心Web框架
+Django>=4.2.16,<5.3
+djangorestframework>=3.16.0
+PyMySQL>=1.1.1
+sqlparse>=0.5.1
+asgiref>=3.8.1
+
+# 爬虫系统
+Scrapy>=2.12.0
+scrapy-redis>=0.9.1  # 分布式爬虫支持，如不需要可删除
+redis>=6.0.0  # Redis客户端，用于分布式爬虫，如不需要可删除
+lxml>=5.4.0  # XML和HTML解析
+parsel>=1.10.0  # CSS/XPath选择器
+cssselect>=1.3.0  # CSS选择器
+
+# 组件识别核心
+pyahocorasick>=2.1.0  # Aho-Corasick算法实现，必需
+# 注：如无法安装，项目有纯Python实现的备选方案
+
+# HTTP和网络
+requests>=2.32.0
+Twisted>=24.0.0  # 异步网络框架
+cryptography>=44.0.0  # 加密库
+pyOpenSSL>=25.0.0  # TLS/SSL支持
+
+# 工具库
+w3lib>=2.3.0  # URL和HTML处理工具
+attrs>=25.0.0  # Python类助手 

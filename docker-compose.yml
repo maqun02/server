@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # Web应用服务
+  web:
+    build: .
+    restart: always
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    environment:
+      - DJANGO_SETTINGS_MODULE=project.settings
+      # MySQL配置
+      - MYSQL_HOST=db
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=fwf
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=pbqthw82
+      # Redis配置（用于分布式爬虫）
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - static_volume:/app/static
+      - media_volume:/app/media
+    command: >
+      bash -c "python manage.py migrate &&
+               gunicorn project.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+
+  # MySQL数据库服务
+  db:
+    image: mysql:8.0
+    restart: always
+    environment:
+      - MYSQL_DATABASE=fwf
+      - MYSQL_ROOT_PASSWORD=pbqthw82
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+  # Redis服务（用于分布式爬虫）
+  redis:
+    image: redis:7.0
+    restart: always
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+volumes:
+  mysql_data:
+  redis_data:
+  static_volume:
+  media_volume: 
