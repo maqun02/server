@@ -29,12 +29,10 @@ class TaskRunner:
             log_action(task.user, "task_status_change", task.id, "success", 
                       f"任务状态更新: 排队中 -> 运行中")
             
-            # 获取scrapy命令的绝对路径
-            scrapy_path = os.path.join(settings.BASE_DIR, 'venv', 'bin', 'scrapy')
-            if not os.path.exists(scrapy_path):
-                scrapy_path = 'scrapy'  # 回退到环境变量中的scrapy
-                log_action(task.user, "task_debug", task.id, "info", 
-                          f"使用环境变量中的scrapy命令: {scrapy_path}")
+            # 使用环境变量中的scrapy命令
+            scrapy_path = 'scrapy'
+            log_action(task.user, "task_debug", task.id, "info", 
+                      f"使用环境变量中的scrapy命令: {scrapy_path}")
             
             # 构建Scrapy命令
             command = [
