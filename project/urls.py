@@ -23,6 +23,9 @@ from fingerprints.views import FingerprintViewSet
 from tasks.views import CrawlerTaskViewSet
 from results.views import ResultViewSet
 from logs.views import SystemLogViewSet
+from scrapy_engine.views import ScrapyViewSet, CrawlerTaskCreateAPIView
+from django.conf import settings
+from django.conf.urls.static import static
 
 # 创建简单首页视图
 def index(request):
@@ -41,10 +44,12 @@ router.register(r'fingerprints', FingerprintViewSet)
 router.register(r'tasks', CrawlerTaskViewSet)
 router.register(r'results', ResultViewSet)
 router.register(r'logs', SystemLogViewSet)
+router.register(r'scrapy', ScrapyViewSet, basename='scrapy')
 
 urlpatterns = [
     path('', index, name='index'),
     path('admin/', admin.site.urls),
     path('api-auth/', include('rest_framework.urls')),
     path('api/', include(router.urls)),
-]
+    path('api/crawler/create/', CrawlerTaskCreateAPIView.as_view(), name='create-crawler-task'),
+] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -1,10 +1,3 @@
-try:
-    import pyahocorasick
-    PYAHOCORASICK_AVAILABLE = True
-except ImportError:
-    PYAHOCORASICK_AVAILABLE = False
-    print("Warning: pyahocorasick module not available, using simple matching instead")
-
 import unicodedata
 import html
 import re
@@ -12,44 +5,116 @@ import binascii
 from .models import Fingerprint
 from logs.utils import log_action
 
-# 添加纯Python实现的简化版Aho-Corasick算法
-class SimplePyAhoCorasick:
-    """简化的纯Python Aho-Corasick实现，用作后备"""
+# 纯Python实现的Aho-Corasick算法
+class Node:
     def __init__(self):
-        self.keywords = {}
+        self.goto = {}  # 转移函数
+        self.out = []   # 输出函数
+        self.value = None  # 存储关联的值
+        self.fail = None  # 失效函数
+
+class AhoCorasick:
+    """纯Python实现的Aho-Corasick算法"""
+    def __init__(self):
+        self.root = Node()
         self.finalized = False
+        self.keywords = {}  # 存储所有关键词及其关联值
         
     def add_string(self, string, value):
+        """
+        添加一个字符串及其关联值到自动机
+        """
+        if self.finalized:
+            raise ValueError("Automaton is finalized. Cannot add new strings.")
+        
         self.keywords[string] = value
+        node = self.root
+        for symbol in string:
+            node = node.goto.setdefault(symbol, Node())
+        node.value = value
+        node.out.append(string)
+        
         self.finalized = False
+        return self
         
     def make_automaton(self):
+        """
+        构建失效函数
+        """
+        # 利用BFS构建失效函数
+        queue = []
+        
+        # 初始化根节点的所有直接子节点
+        for symbol, node in self.root.goto.items():
+            queue.append(node)
+            node.fail = self.root  # 第一层节点的失效指针指向根
+        
+        # BFS遍历所有节点，构建失效函数
+        while queue:
+            current = queue.pop(0)  # 出队
+            
+            # 将当前节点的所有子节点加入队列
+            for symbol, child in current.goto.items():
+                queue.append(child)
+                
+                # 寻找当前节点的失效节点
+                fail_node = current.fail
+                
+                # 寻找失效节点的转移
+                while fail_node is not None and symbol not in fail_node.goto:
+                    fail_node = fail_node.fail
+                
+                # 设置子节点的失效指针
+                child.fail = fail_node.goto[symbol] if fail_node else self.root
+                
+                # 将失效节点的输出添加到当前节点
+                if child.fail.out:
+                    child.out.extend(child.fail.out)
+        
         self.finalized = True
+        return self
         
     def iter(self, text):
+        """
+        在文本中查找所有匹配项
+        """
         if not self.finalized:
             raise ValueError("Automaton not finalized. Call make_automaton() first.")
-        results = []
-        for keyword, value in self.keywords.items():
-            start = 0
-            while True:
-                pos = text.find(keyword, start)
-                if pos == -1:
-                    break
-                results.append((pos + len(keyword) - 1, value))
-                start = pos + 1
-        # 按照匹配位置排序，模拟真实的AC自动机输出
-        return sorted(results)
+        
+        results = []  # 存储结果，格式为(end_pos, value)
+        current = self.root
+        
+        # 遍历文本的每个字符
+        for i, symbol in enumerate(text):
+            # 如果当前字符没有匹配的转移，则按失效函数跳转
+            while current is not None and symbol not in current.goto:
+                current = current.fail
+            
+            # 如果走到了根节点还没匹配，重新开始
+            if current is None:
+                current = self.root
+                continue
+            
+            # 转移到下一个状态
+            current = current.goto[symbol]
+            
+            # 收集所有匹配结果
+            for pattern in current.out:
+                end_pos = i
+                results.append((end_pos, self.keywords[pattern]))
+        
+        return sorted(results)  # 按照结束位置排序
+
+# 为了向后兼容，保留旧命名
+PurePyAhoCorasick = AhoCorasick 
+SimplePyAhoCorasick = AhoCorasick
 
 class ComponentMatcher:
     """
     使用Aho-Corasick算法进行多模式匹配的组件匹配器
     """
     def __init__(self):
-        if PYAHOCORASICK_AVAILABLE:
-            self.automaton = pyahocorasick.Automaton()
-        else:
-            self.automaton = SimplePyAhoCorasick()  # 使用我们的纯Python实现
+        self.automaton = AhoCorasick()  # 使用纯Python实现的AC自动机
         self.loaded = False
         self.fingerprints = {}
         self.simple_fingerprints = []  # 备用的简单指纹列表
@@ -73,17 +138,9 @@ class ComponentMatcher:
             processed_keyword = self._preprocess_text(fingerprint.keyword)
             if processed_keyword:
                 self.simple_fingerprints.append((processed_keyword, fingerprint))
-                
-        # log_action(None, "task_debug", None, "info", 
-        #         f"简单指纹加载完成: 已加载{len(self.simple_fingerprints)}个指纹")
         
         # 重置自动机状态
-        if PYAHOCORASICK_AVAILABLE:
-            # 使用原生pyahocorasick
-            self.automaton = pyahocorasick.Automaton()
-        else: 
-            # 使用我们的简化实现
-            self.automaton = SimplePyAhoCorasick()
+        self.automaton = AhoCorasick()
         
         self.fingerprints = {}
         
@@ -100,11 +157,6 @@ class ComponentMatcher:
             try:
                 self.automaton.add_string(processed_keyword, (i, fingerprint))
                 self.fingerprints[i] = fingerprint
-                
-                # 记录指纹处理信息
-                # if processed_keyword != fingerprint.keyword.lower():
-                #     log_action(None, "task_debug", None, "info", 
-                #              f"指纹预处理: 组件='{fingerprint.component}', 原关键词='{fingerprint.keyword}' -> 处理后='{processed_keyword}'")
             except Exception as e:
                 log_action(None, "task_debug", None, "failure", 
                          f"添加指纹到自动机失败: ID={fingerprint.id}, 组件={fingerprint.component}, 关键词='{fingerprint.keyword}', 错误: {str(e)}")
@@ -116,10 +168,6 @@ class ComponentMatcher:
                 self.loaded = True
                 log_action(None, "task_debug", None, "success", 
                          f"指纹加载完成: 成功加载了{len(self.fingerprints)}个指纹到自动机")
-                
-                if not PYAHOCORASICK_AVAILABLE:
-                    log_action(None, "task_debug", None, "info", 
-                            "使用纯Python实现的Aho-Corasick算法")
             except Exception as e:
                 self.loaded = False
                 log_action(None, "task_debug", None, "failure", 
@@ -193,11 +241,6 @@ class ComponentMatcher:
                 context = content[context_start:context_end]
                 
                 matches.append((fingerprint.component, fingerprint.keyword))
-                # log_action(None, "task_debug", None, "success", 
-                #          f"简单匹配成功: 找到组件'{fingerprint.component}', 关键词='{fingerprint.keyword}', 上下文='{context}'")
-        
-        # log_action(None, "task_debug", None, "info", 
-        #          f"简单匹配完成: 找到{len(matches)}个匹配项")
                 
         return matches
         
@@ -227,59 +270,31 @@ class ComponentMatcher:
                      "匹配内容为空，跳过匹配")
             return []
         
-        # 记录匹配的内容样本（使用十六进制表示）
-        # hex_sample = self._hexdump(content)
-        # log_action(None, "task_debug", None, "info", 
-        #          f"原始内容样本: {hex_sample}")
-        
         # 对内容进行预处理
         processed_content = self._preprocess_text(content)
-        
-        # 记录处理后的内容样本
-        # processed_hex = self._hexdump(processed_content)
-        # log_action(None, "task_debug", None, "info", 
-        #          f"处理后内容: {processed_hex}")
-        
-        # 如果预处理后内容变化较大，记录日志
-        # if processed_content and content and len(processed_content) / len(content) < 0.9:
-        #     log_action(None, "task_debug", None, "info", 
-        #              f"内容预处理导致长度变化: {len(content)} -> {len(processed_content)}")
         
         matches = []
         
         # 首先进行简单匹配
         if self.use_simple_matching and self.simple_fingerprints:
-            # log_action(None, "task_debug", None, "info", 
-            #          f"启动简单匹配: 内容长度={len(processed_content)}, 指纹数量={len(self.simple_fingerprints)}")
             simple_matches = self._simple_match(processed_content)
             matches.extend(simple_matches)
             
         # 使用自动机进行多模式匹配
         if self.loaded:
             try:
-                # log_action(None, "task_debug", None, "info", 
-                #          f"启动自动机匹配: 内容长度={len(processed_content)}, 指纹数量={len(self.fingerprints)}")
-                
                 for match in self.automaton.iter(processed_content):
                     idx, (_, fingerprint) = match
                     match_position = match[0] - len(fingerprint.keyword) + 1
                     context = processed_content[max(0, match_position-10):match_position + len(fingerprint.keyword) + 10]
                     
                     matches.append((fingerprint.component, fingerprint.keyword))
-                    # log_action(None, "task_debug", None, "success", 
-                    #          f"自动机匹配成功: 找到组件'{fingerprint.component}', 关键词='{fingerprint.keyword}', 上下文='{context}'")
-                
-                # log_action(None, "task_debug", None, "info", 
-                #          f"自动机匹配完成: 找到{len(matches) - (len(simple_matches) if self.use_simple_matching else 0)}个匹配项")
             except Exception as e:
                 log_action(None, "task_debug", None, "failure", 
                          f"自动机匹配过程发生异常: {str(e)}")
         
         # 去重
         unique_matches = list(set(matches))
-        # if len(unique_matches) != len(matches):
-        #     log_action(None, "task_debug", None, "info", 
-        #              f"去重: 从{len(matches)}个匹配项中去除了{len(matches) - len(unique_matches)}个重复项")
         
         # 如果没有匹配项，记录信息
         if not unique_matches:

@@ -20,9 +20,26 @@ class CrawlerTaskSerializer(serializers.ModelSerializer):
         return obj.get_mode_display()
 
 class CrawlerTaskCreateSerializer(serializers.ModelSerializer):
+    """爬虫任务创建序列化器"""
+    mode = serializers.ChoiceField(
+        choices=CrawlerTask.MODE_CHOICES,
+        default='simple',
+        help_text="爬取模式: simple(简单模式)或deep(完整模式)。"
+                 "simple模式只爬取指定URL页面内容，"
+                 "deep模式进行深度爬取，跟随网站内链接进行爬取。"
+    )
+    
     class Meta:
         model = CrawlerTask
-        fields = ['url', 'mode', 'depth']
+        fields = ['url', 'mode']
+        extra_kwargs = {
+            'url': {'help_text': '要爬取的网站URL'},
+        }
+        
+    def validate_mode(self, value):
+        if value not in ['simple', 'deep']:
+            raise serializers.ValidationError("爬取模式必须是'simple'(简单模式)或'deep'(完整模式)")
+        return value
         
     def validate_depth(self, value):
         if value < 1:

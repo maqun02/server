@@ -59,7 +59,11 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
-    password = serializers.CharField(style={'input_type': 'password'})
+    password = serializers.CharField(style={'input_type': 'password'}) 
 
 class ResetPasswordSerializer(serializers.Serializer):
-    target_id = serializers.CharField(required=False, help_text="用户ID或用户名") 
+    target_id = serializers.CharField(required=False, help_text="用户ID或用户名")
+
+class UpdateRoleSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField(help_text="用户ID")
+    role = serializers.ChoiceField(choices=UserProfile.USER_ROLES, help_text="新角色") 

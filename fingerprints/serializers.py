@@ -54,7 +54,7 @@ class FingerprintApproveSerializer(serializers.ModelSerializer):
         instance.admin = admin
         instance.save()
         
-        return instance
+        return instance 
 
 class BatchFingerprintSubmitSerializer(serializers.Serializer):
     fingerprints = FingerprintSubmitSerializer(many=True)

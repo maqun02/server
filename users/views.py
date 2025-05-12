@@ -5,7 +5,7 @@ from rest_framework.decorators import action
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from .models import UserProfile
-from .serializers import UserSerializer, UserRegistrationSerializer, LoginSerializer, ResetPasswordSerializer
+from .serializers import UserSerializer, UserRegistrationSerializer, LoginSerializer, ResetPasswordSerializer, UpdateRoleSerializer
 from .permissions import IsAdminUser
 from logs.utils import log_action
 
@@ -101,4 +101,40 @@ class UserViewSet(viewsets.ModelViewSet):
                 return Response({"detail": f"用户 {user.username} 的密码已重置为123456"}, status=status.HTTP_200_OK)
             except User.DoesNotExist:
                 return Response({"detail": "用户不存在"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAdminUser])
+    def update_role(self, request):
+        """
+        管理员更新用户角色接口
+        """
+        serializer = UpdateRoleSerializer(data=request.data)
+        if serializer.is_valid():
+            user_id = serializer.validated_data['user_id']
+            new_role = serializer.validated_data['role']
+            
+            try:
+                user = User.objects.get(id=user_id)
+                
+                # 获取或创建用户档案
+                profile, created = UserProfile.objects.get_or_create(user=user)
+                old_role = profile.role
+                
+                # 更新角色
+                profile.role = new_role
+                profile.save()
+                
+                log_action(request.user, "user_management", user.id, "success", 
+                          f"管理员更新用户 {user.username} 的角色: {old_role} -> {new_role}")
+                
+                return Response({
+                    "detail": f"用户 {user.username} 的角色已更新为 {dict(UserProfile.USER_ROLES)[new_role]}",
+                    "user_id": user.id,
+                    "username": user.username,
+                    "new_role": new_role
+                }, status=status.HTTP_200_OK)
+                
+            except User.DoesNotExist:
+                return Response({"detail": "用户不存在"}, status=status.HTTP_404_NOT_FOUND)
+                
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

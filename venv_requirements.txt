@@ -47,6 +47,5 @@ zope.interface==7.2
 asgiref==3.8.1
 Django==4.2.16
 djangorestframework==3.16.0
-pyahocorasick==2.1.0
 PyMySQL==1.1.1
 sqlparse==0.5.1

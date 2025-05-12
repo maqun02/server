@@ -167,3 +167,21 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
 }
+
+# 添加Redis缓存配置
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': 'redis://default:7sxxq74x@scrapyredis-redis.ns-6k0uv9r0.svc:6379/1',
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+}
+
+# Redis连接环境变量（用于各个组件访问）
+import os
+os.environ.setdefault('REDIS_HOST', 'scrapyredis-redis.ns-6k0uv9r0.svc')
+os.environ.setdefault('REDIS_PORT', '6379')
+os.environ.setdefault('REDIS_USERNAME', 'default')
+os.environ.setdefault('REDIS_PASSWORD', '7sxxq74x')

@@ -33,12 +33,39 @@ class CrawlerTaskViewSet(viewsets.ModelViewSet):
                 return CrawlerTask.objects.all()
         return CrawlerTask.objects.filter(user=user)
     
+    def create(self, request, *args, **kwargs):
+        """创建爬虫任务"""
+        # 验证URL
+        url = request.data.get('url')
+        if not url:
+            return Response({'error': '缺少URL参数'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 验证模式
+        mode = request.data.get('mode', 'simple')
+        if mode not in ['simple', 'deep']:
+            return Response({'error': '无效的爬取模式，请使用simple(简单模式)或deep(完整模式)'}, 
+                          status=status.HTTP_400_BAD_REQUEST)
+        
+        # 创建任务并返回序列化结果
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        
+        # 启动爬虫任务
+        from tasks.task_runner import task_runner
+        task_runner.run_task(serializer.instance.id)
+        
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+    
     def perform_create(self, serializer):
         """创建任务时设置用户"""
         task = serializer.save(user=self.request.user)
         
+        # 记录任务创建信息，包括爬取模式说明
+        mode_desc = "简单模式(仅爬取指定URL)" if task.mode == 'simple' else "完整模式(深度爬取内链)"
         log_action(self.request.user, "create_task", task.id, "success", 
-                  f"创建爬虫任务: {task.url} ({task.get_mode_display()})")
+                  f"创建爬虫任务: {task.url} ({mode_desc})")
         
         # 在后台线程中运行爬虫任务
         thread = threading.Thread(target=task_runner.run_task, args=(task.id,))
