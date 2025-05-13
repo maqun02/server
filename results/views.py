@@ -3,7 +3,7 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.shortcuts import get_object_or_404
-from .models import CrawlerResult, IdentifiedComponent
+from .models import CrawlerResult, IdentifiedComponent, StaticResource
 from tasks.models import CrawlerTask
 from .serializers import CrawlerResultSerializer, FullResultSerializer, ReportSerializer
 from users.permissions import IsOwnerOrAdmin
@@ -74,9 +74,12 @@ class ResultViewSet(viewsets.ReadOnlyModelViewSet):
         # 构建报告数据
         pages = []
         for result in results:
+            # 获取与该结果相关的资源URL列表
+            resource_urls = [resource.url for resource in StaticResource.objects.filter(result=result)]
+            
             page_data = {
                 "url": result.url,
-                "resources": result.resources,
+                "resources": resource_urls,
                 "components": [comp.component for comp in result.components.all()]
             }
             pages.append(page_data)
@@ -84,7 +87,10 @@ class ResultViewSet(viewsets.ReadOnlyModelViewSet):
         # 统计组件分布
         component_stats = defaultdict(list)
         for comp in components:
-            component_stats[comp.component].append(comp.result.url)
+            if comp.result:
+                component_stats[comp.component].append(comp.result.url)
+            elif comp.resource and comp.resource.result:
+                component_stats[comp.component].append(comp.resource.result.url)
         
         # 构建报告
         report_data = {

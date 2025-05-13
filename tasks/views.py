@@ -1,15 +1,14 @@
 from django.shortcuts import render
 from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from django.shortcuts import get_object_or_404
 from .models import CrawlerTask
 from .serializers import CrawlerTaskSerializer, CrawlerTaskCreateSerializer
 from users.permissions import IsOwnerOrAdmin
 from logs.utils import log_action
-from .task_runner import task_runner
 import threading
-from fingerprints.utils import component_matcher
+from fingerprints.utils import ComponentMatcher
 from fingerprints.models import Fingerprint
 
 class CrawlerTaskViewSet(viewsets.ModelViewSet):
@@ -51,10 +50,6 @@ class CrawlerTaskViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         
-        # 启动爬虫任务
-        from tasks.task_runner import task_runner
-        task_runner.run_task(serializer.instance.id)
-        
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
     
@@ -68,7 +63,12 @@ class CrawlerTaskViewSet(viewsets.ModelViewSet):
                   f"创建爬虫任务: {task.url} ({mode_desc})")
         
         # 在后台线程中运行爬虫任务
-        thread = threading.Thread(target=task_runner.run_task, args=(task.id,))
+        def run_task_thread():
+            from tasks.task_runner import TaskRunner
+            runner = TaskRunner(task.id)
+            runner.run()
+            
+        thread = threading.Thread(target=run_task_thread)
         thread.daemon = True
         thread.start()
     
@@ -94,7 +94,12 @@ class CrawlerTaskViewSet(viewsets.ModelViewSet):
                   f"重启任务: {task.url}")
         
         # 在后台线程中运行爬虫任务
-        thread = threading.Thread(target=task_runner.run_task, args=(task.id,))
+        def run_task_thread():
+            from tasks.task_runner import TaskRunner
+            runner = TaskRunner(task.id)
+            runner.run()
+            
+        thread = threading.Thread(target=run_task_thread)
         thread.daemon = True
         thread.start()
         
@@ -111,7 +116,8 @@ class CrawlerTaskViewSet(viewsets.ModelViewSet):
             "status": task.status,
             "status_display": task.get_status_display(),
             "started_at": task.started_at,
-            "ended_at": task.ended_at
+            "ended_at": task.ended_at,
+            "progress": task.get_progress()
         })
         
     @action(detail=False, methods=['post'])
@@ -142,6 +148,8 @@ class CrawlerTaskViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
             
         # 输出指纹库信息
+        component_matcher = ComponentMatcher()
+        
         fingerprint_info = []
         for fp in approved_fingerprints:
             processed = component_matcher._preprocess_text(fp.keyword)
@@ -196,35 +204,65 @@ class CrawlerTaskViewSet(viewsets.ModelViewSet):
         if not keywords:
             return Response({"error": "请提供keywords参数"}, status=status.HTTP_400_BAD_REQUEST)
         
+        component_matcher = ComponentMatcher()
+        
         # 处理内容
         processed_content = component_matcher._preprocess_text(content)
         
-        # 直接进行简单字符串匹配测试
-        results = []
+        # 进行匹配
+        matches = []
         for keyword in keywords:
             processed_keyword = component_matcher._preprocess_text(keyword)
-            found = processed_keyword in processed_content
-            position = processed_content.find(processed_keyword) if found else -1
-            
-            # 如果找到匹配，提取上下文
-            context = ""
-            if found:
-                start_pos = max(0, position - 10)
-                end_pos = min(len(processed_content), position + len(processed_keyword) + 10)
-                context = processed_content[start_pos:end_pos]
-            
-            results.append({
-                "keyword": keyword,
-                "processed_keyword": processed_keyword,
-                "found": found,
-                "position": position,
-                "context": context
-            })
+            if processed_keyword in processed_content:
+                matches.append(keyword)
         
-        # 返回结果
         return Response({
-            "content_length": len(content),
-            "processed_content_length": len(processed_content),
             "processed_content_sample": processed_content[:100] + ("..." if len(processed_content) > 100 else ""),
-            "results": results
+            "keywords": [{
+                "original": kw, 
+                "processed": component_matcher._preprocess_text(kw)
+            } for kw in keywords],
+            "matches": matches,
+            "match_count": len(matches)
         })
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def start_task(request, task_id):
+    """启动爬虫任务"""
+    try:
+        task = CrawlerTask.objects.get(id=task_id, user=request.user)
+        
+        if task.status != 'queued':
+            return Response({
+                'success': False,
+                'message': '只能启动处于排队中状态的任务'
+            }, status=400)
+
+        # 使用线程启动任务，避免阻塞API响应
+        def run_task_thread():
+            from tasks.task_runner import TaskRunner
+            runner = TaskRunner(task_id)
+            runner.run()
+            
+        thread = threading.Thread(target=run_task_thread)
+        thread.daemon = True
+        thread.start()
+        
+        # 立即返回成功响应
+        return Response({
+            'success': True,
+            'message': '任务已启动',
+            'task_id': task_id
+        })
+        
+    except CrawlerTask.DoesNotExist:
+        return Response({
+            'success': False,
+            'message': '任务不存在或没有权限'
+        }, status=404)
+    except Exception as e:
+        return Response({
+            'success': False,
+            'message': f'启动任务失败: {str(e)}'
+        }, status=500)

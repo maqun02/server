@@ -7,11 +7,16 @@ asgiref>=3.8.1
 
 # 爬虫系统
 Scrapy>=2.12.0
-scrapy-redis>=0.9.1  # 分布式爬虫支持，如不需要可删除
-redis>=6.0.0  # Redis客户端，用于分布式爬虫，如不需要可删除
+scrapy-redis>=0.9.1  # 分布式爬虫支持
+scrapy-splash>=0.9.0  # Splash JavaScript渲染支持
+redis>=6.0.0  # Redis客户端，用于分布式爬虫
 lxml>=5.4.0  # XML和HTML解析
 parsel>=1.10.0  # CSS/XPath选择器
 cssselect>=1.3.0  # CSS选择器
+
+# 动态渲染支持
+selenium>=4.32.0
+scrapy-selenium>=0.0.7
 
 # 组件识别核心
 # 已使用纯Python实现Aho-Corasick算法，不再需要外部库
@@ -24,4 +29,6 @@ pyOpenSSL>=25.0.0  # TLS/SSL支持
 
 # 工具库
 w3lib>=2.3.0  # URL和HTML处理工具
-attrs>=25.0.0  # Python类助手 
+attrs>=25.0.0  # Python类助手
+tldextract>=5.0.0  # 提取域名和子域名
+python-dateutil>=2.9.0  # 日期处理库 

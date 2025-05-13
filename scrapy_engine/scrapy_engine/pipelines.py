@@ -9,11 +9,20 @@ from itemadapter import ItemAdapter
 import json
 import django
 import os
-from .items import LinkItem, ContentItem, StaticResourceItem
+from .items import LinkItem, ContentItem, ResourceItem
 import sys
 import datetime
 import asyncio
 from asgiref.sync import sync_to_async
+import logging
+import hashlib
+import redis
+from scrapy.exceptions import DropItem
+from django.db import transaction
+from django.utils import timezone
+from tasks.models import CrawlerTask
+from results.models import CrawlerLink, CrawlerResult, StaticResource, IdentifiedComponent
+from fingerprints.utils import ComponentMatcher
 
 # 设置Django环境
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "project.settings")
@@ -25,238 +34,302 @@ from results.models import CrawlerLink, CrawlerResult, StaticResource
 from logs.utils import log_action
 from django.db import transaction
 
-class ScrapyEnginePipeline:
-    """
-    处理爬虫数据的管道
-    将数据保存到Django数据库中
-    """
-    def __init__(self):
-        self.sync_enabled = True
+class BasePipeline:
+    """基础管道类，提供共用功能"""
+    
+    def __init__(self, redis_host, redis_port, redis_db):
+        self.redis_host = redis_host
+        self.redis_port = redis_port
+        self.redis_db = redis_db
+        self.redis_conn = None
+        self.logger = logging.getLogger(__name__)
         
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(
+            redis_host=crawler.settings.get('REDIS_HOST', 'localhost'),
+            redis_port=crawler.settings.get('REDIS_PORT', 6379),
+            redis_db=crawler.settings.get('REDIS_DB', 0)
+        )
+    
+    def open_spider(self, spider):
+        """爬虫启动时连接Redis"""
+        try:
+            self.redis_conn = redis.Redis(
+                host=self.redis_host,
+                port=self.redis_port,
+                db=self.redis_db,
+                decode_responses=True  # 自动将字节解码为字符串
+            )
+            self.logger.info(f"已连接到Redis: {self.redis_host}:{self.redis_port}")
+        except Exception as e:
+            self.logger.error(f"Redis连接失败: {str(e)}")
+            self.redis_conn = None
+
+class LinkPipeline(BasePipeline):
+    """处理链接爬虫的结果管道"""
+    
     def process_item(self, item, spider):
-        adapter = ItemAdapter(item)
+        """处理链接项，保存到数据库并添加到Redis队列"""
+        if not hasattr(spider, 'task_id') or not spider.task_id:
+            raise DropItem(f"缺少task_id，丢弃链接项: {item['url']}")
         
-        # 打印时间戳
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # 根据不同的项类型进行不同的处理
-        if isinstance(item, LinkItem):
-            print(f"[{now}] 处理链接: {adapter.get('url')}")
-            # 在异步环境中运行同步代码
-            if 'twisted.internet.reactor' in sys.modules:
-                return self.process_link_item_async(adapter, spider)
-            else:
-                return self.process_link_item(adapter, spider)
-        elif isinstance(item, ContentItem):
-            print(f"[{now}] 处理内容: {adapter.get('url')}")
-            if 'twisted.internet.reactor' in sys.modules:
-                return self.process_content_item_async(adapter, spider)
-            else:
-                return self.process_content_item(adapter, spider)
-        elif isinstance(item, StaticResourceItem):
-            print(f"[{now}] 处理资源: {adapter.get('url')}")
-            if 'twisted.internet.reactor' in sys.modules:
-                return self.process_resource_item_async(adapter, spider)
-            else:
-                return self.process_resource_item(adapter, spider)
-        
-        return item
-    
-    async def process_link_item_async(self, adapter, spider):
-        """异步处理链接项"""
-        @sync_to_async
-        def process_link():
-            return self.process_link_item(adapter, spider)
-        
-        return await process_link()
-    
-    async def process_content_item_async(self, adapter, spider):
-        """异步处理内容项"""
-        @sync_to_async
-        def process_content():
-            return self.process_content_item(adapter, spider)
-        
-        return await process_content()
-    
-    async def process_resource_item_async(self, adapter, spider):
-        """异步处理资源项"""
-        @sync_to_async
-        def process_resource():
-            return self.process_resource_item(adapter, spider)
-        
-        return await process_resource()
-    
-    @transaction.atomic
-    def process_link_item(self, adapter, spider):
-        """处理链接项"""
-        task_id = adapter.get('task_id')
-        url = adapter.get('url')
+        if spider.name != 'link_spider':
+            return item
         
         try:
-            task = CrawlerTask.objects.get(id=task_id)
-            
-            # 创建或更新链接记录
-            link, created = CrawlerLink.objects.update_or_create(
-                task=task,
-                url=url,
-                defaults={
-                    'internal_links': adapter.get('internal_links', []),
-                    'external_links': adapter.get('external_links', []),
-                    'internal_nofollow_links': adapter.get('internal_nofollow_links', []),
-                    'external_nofollow_links': adapter.get('external_nofollow_links', []),
-                }
-            )
-            
-            # 更新任务统计信息
-            if created:
-                task.links_found += 1
-                task.save(update_fields=['links_found'])
+            with transaction.atomic():
+                task_id = item['task_id']
+                task = CrawlerTask.objects.get(id=task_id)
                 
-                # 打印进度信息到命令行
-                print(f"[链接爬取] 任务 {task_id}: 已发现 {task.links_found} 个链接")
-                # 每发现10个链接打印一次摘要
-                if task.links_found % 10 == 0:
-                    print(f"[进度摘要] 任务 {task_id}: 已发现 {task.links_found} 个链接, 已爬取 {task.links_crawled} 个内容, 资源: {task.resources_crawled}/{task.resources_found}")
+                # 更新任务状态
+                if task.status == 'queued':
+                    task.status = 'link_crawling'
+                    task.started_at = timezone.now()
+                    task.save()
                 
-            # 记录日志
-            log_action(task.user, "link_crawled", task.id, "success", 
-                      f"爬取链接: {url}, 发现 {len(adapter.get('internal_links', []))} 内链, {len(adapter.get('external_links', []))} 外链")
-                      
-            # 更新任务状态（对于第一个URL）
-            if task.links_found == 1 and task.status == 'link_crawling':
-                task.status = 'content_crawling'
-                task.save(update_fields=['status'])
-                print(f"\n[阶段转换] 任务 {task_id}: 链接爬取阶段完成，开始内容爬取阶段\n")
-                log_action(task.user, "task_status_change", task.id, "success", 
-                         f"任务状态更新: 链接爬取中 -> 内容爬取中")
-            
-        except CrawlerTask.DoesNotExist:
-            print(f"[错误] 无法找到任务ID: {task_id}")
-            spider.logger.error(f"无法找到任务ID: {task_id}")
-        except Exception as e:
-            print(f"[错误] 处理链接项错误: {str(e)}")
-            spider.logger.error(f"处理链接项错误: {str(e)}")
-            
-        return adapter.asdict()
-    
-    @transaction.atomic
-    def process_content_item(self, adapter, spider):
-        """处理内容项"""
-        task_id = adapter.get('task_id')
-        url = adapter.get('url')
-        
-        try:
-            task = CrawlerTask.objects.get(id=task_id)
-            
-            # 创建或更新内容记录
-            result, created = CrawlerResult.objects.update_or_create(
-                task=task,
-                url=url,
-                defaults={
-                    'title': adapter.get('title', ''),
-                    'html_source': adapter.get('html_content', ''),
-                    'headers': adapter.get('headers', {}),
-                }
-            )
-            
-            # 更新任务统计信息
-            if created:
-                task.links_crawled += 1
-                
-                # 获取静态资源数量
-                resources = adapter.get('static_resources', [])
-                task.resources_found += len(resources)
-                
-                task.save(update_fields=['links_crawled', 'resources_found'])
-                
-                # 打印进度信息到命令行
-                print(f"[内容爬取] 任务 {task_id}: 已爬取 {task.links_crawled}/{task.links_found} 个页面，发现 {len(resources)} 个静态资源")
-                # 每爬取5个页面打印一次摘要
-                if task.links_crawled % 5 == 0:
-                    progress = (task.links_crawled / task.links_found * 100) if task.links_found > 0 else 0
-                    print(f"[进度摘要] 任务 {task_id}: 页面进度 {progress:.1f}%, 已爬取 {task.links_crawled}/{task.links_found} 个页面, 资源: {task.resources_crawled}/{task.resources_found}")
-            
-            # 记录日志
-            log_action(task.user, "content_crawled", task.id, "success", 
-                      f"爬取内容: {url}, 标题: {adapter.get('title', '')[:30]}..., 静态资源: {len(adapter.get('static_resources', []))}")
-            
-            # 如果所有链接都已爬取完毕，更新任务状态
-            if task.links_crawled >= task.links_found and task.status == 'content_crawling':
-                task.status = 'resource_crawling'
-                task.save(update_fields=['status'])
-                print(f"\n[阶段转换] 任务 {task_id}: 内容爬取阶段完成，开始资源爬取阶段\n")
-                log_action(task.user, "task_status_change", task.id, "success", 
-                         f"任务状态更新: 内容爬取中 -> 资源爬取中")
-            
-        except CrawlerTask.DoesNotExist:
-            print(f"[错误] 无法找到任务ID: {task_id}")
-            spider.logger.error(f"无法找到任务ID: {task_id}")
-        except Exception as e:
-            print(f"[错误] 处理内容项错误: {str(e)}")
-            spider.logger.error(f"处理内容项错误: {str(e)}")
-            
-        return adapter.asdict()
-    
-    @transaction.atomic
-    def process_resource_item(self, adapter, spider):
-        """处理资源项"""
-        task_id = adapter.get('task_id')
-        url = adapter.get('url')
-        content_url = adapter.get('content_url')
-        
-        try:
-            task = CrawlerTask.objects.get(id=task_id)
-            
-            # 获取对应的内容记录
-            try:
-                result = CrawlerResult.objects.get(task=task, url=content_url)
-                
-                # 创建或更新资源记录
-                resource, created = StaticResource.objects.update_or_create(
+                # 保存链接到数据库
+                crawler_link, created = CrawlerLink.objects.update_or_create(
                     task=task,
-                    url=url,
+                    url=item['url'],
                     defaults={
-                        'result': result,
-                        'resource_type': adapter.get('resource_type', 'other'),
-                        'content': adapter.get('content', b''),
-                        'md5_hash': adapter.get('md5', None),
+                        'internal_links': item['internal_links'],
+                        'external_links': item['external_links'],
+                        'internal_nofollow_links': item['internal_nofollow_links'],
+                        'external_nofollow_links': item['external_nofollow_links'],
                     }
                 )
                 
-                # 更新任务统计信息
-                if created:
-                    task.resources_crawled += 1
-                    task.save(update_fields=['resources_crawled'])
+                # 更新任务链接计数
+                links_found = (
+                    len(item['internal_links']) + 
+                    len(item['external_links']) +
+                    len(item['internal_nofollow_links']) + 
+                    len(item['external_nofollow_links'])
+                )
+                task.links_found += links_found
+                task.save()
+                
+                self.logger.info(f"已保存链接: {item['url']}, 找到{links_found}个链接")
+                
+                # 如果启用了Redis，将内容爬取任务添加到队列
+                if self.redis_conn and spider.redis_key:
+                    # 如果是简单模式，只添加起始URL
+                    # 如果是深度模式，添加所有内链
+                    urls_to_crawl = []
                     
-                    # 打印进度信息到命令行
-                    resource_type = adapter.get('resource_type', 'other')
-                    print(f"[资源爬取] 任务 {task_id}: 已爬取 {task.resources_crawled}/{task.resources_found} 个资源，类型: {resource_type}")
-                    # 每爬取20个资源打印一次摘要
-                    if task.resources_crawled % 20 == 0:
-                        progress = (task.resources_crawled / task.resources_found * 100) if task.resources_found > 0 else 0
-                        print(f"[进度摘要] 任务 {task_id}: 资源进度 {progress:.1f}%, 已爬取 {task.resources_crawled}/{task.resources_found} 个资源")
+                    if spider.mode == 'simple':
+                        # 简单模式只爬取当前URL
+                        urls_to_crawl.append(item['url'])
+                    else:
+                        # 深度模式爬取当前URL和内链
+                        urls_to_crawl.append(item['url'])
+                        urls_to_crawl.extend(item['internal_links'])
+                    
+                    # 将URL添加到Redis队列
+                    content_redis_key = f"{spider.redis_key}:content"
+                    for url in urls_to_crawl:
+                        self.redis_conn.sadd(f"{content_redis_key}:urls", url)
+                        # 生成Scrapy-Redis需要的请求格式
+                        request = json.dumps({"url": url})
+                        self.redis_conn.lpush(content_redis_key, request)
+                    
+                    self.logger.info(f"已将{len(urls_to_crawl)}个URL添加到内容爬取队列: {content_redis_key}")
                 
-                # 记录日志
-                log_action(task.user, "resource_crawled", task.id, "success", 
-                          f"爬取资源: {url}, 类型: {adapter.get('resource_type', 'other')}")
+                return item
                 
-                # 如果所有资源都已爬取完毕，更新任务状态
-                if task.resources_crawled >= task.resources_found and task.status == 'resource_crawling':
-                    task.status = 'fingerprint_matching'
-                    task.save(update_fields=['status'])
-                    print(f"\n[阶段转换] 任务 {task_id}: 资源爬取阶段完成，开始指纹匹配阶段\n")
-                    log_action(task.user, "task_status_change", task.id, "success", 
-                             f"任务状态更新: 资源爬取中 -> 指纹匹配中")
-                
-            except CrawlerResult.DoesNotExist:
-                print(f"[错误] 无法找到URL为 {content_url} 的内容记录")
-                spider.logger.error(f"无法找到URL为 {content_url} 的内容记录")
-                
-        except CrawlerTask.DoesNotExist:
-            print(f"[错误] 无法找到任务ID: {task_id}")
-            spider.logger.error(f"无法找到任务ID: {task_id}")
         except Exception as e:
-            print(f"[错误] 处理资源项错误: {str(e)}")
-            spider.logger.error(f"处理资源项错误: {str(e)}")
+            self.logger.error(f"保存链接失败: {str(e)}")
+            raise DropItem(f"保存链接失败: {str(e)}")
+
+class ContentPipeline(BasePipeline):
+    """处理内容爬虫的结果管道"""
+    
+    def process_item(self, item, spider):
+        """处理内容项，保存到数据库并添加静态资源到Redis队列"""
+        if not hasattr(spider, 'task_id') or not spider.task_id:
+            return item
+        
+        if spider.name != 'content_spider':
+            return item
+        
+        try:
+            with transaction.atomic():
+                task_id = item['task_id']
+                task = CrawlerTask.objects.get(id=task_id)
+                
+                # 更新任务状态
+                if task.status == 'link_crawling':
+                    task.status = 'content_crawling'
+                    task.save()
+                
+                # 保存内容到数据库
+                crawler_result, created = CrawlerResult.objects.update_or_create(
+                    task=task,
+                    url=item['url'],
+                    defaults={
+                        'title': item['title'],
+                        'html_source': item['html_source'],
+                        'headers': item['headers'],
+                        'resources': item['resources'],
+                    }
+                )
+                
+                # 更新链接状态为已爬取
+                CrawlerLink.objects.filter(task=task, url=item['url']).update(is_crawled=True)
+                
+                # 更新任务计数
+                task.links_crawled += 1
+                task.resources_found += len(item['resources'])
+                task.save()
+                
+                self.logger.info(f"已保存内容: {item['url']}, 标题: {item['title'][:30]}..., 资源数: {len(item['resources'])}")
+                
+                # 如果启用了Redis，将静态资源爬取任务添加到队列
+                if self.redis_conn and spider.redis_key and item['resources']:
+                    # 准备资源爬取任务
+                    resource_redis_key = f"{spider.redis_key}:resource"
+                    
+                    # 为每个资源添加所属页面URL
+                    resources_with_page = []
+                    for resource in item['resources']:
+                        resource_with_page = resource.copy()
+                        resource_with_page['page_url'] = item['url']
+                        resources_with_page.append(resource_with_page)
+                    
+                    # 将资源添加到Redis队列
+                    for resource in resources_with_page:
+                        self.redis_conn.sadd(f"{resource_redis_key}:urls", resource['url'])
+                        # 生成Scrapy-Redis需要的请求格式，包含额外元数据
+                        request = json.dumps({
+                            "url": resource['url'],
+                            "meta": {
+                                "resource_type": resource['type'],
+                                "page_url": resource['page_url']
+                            }
+                        })
+                        self.redis_conn.lpush(resource_redis_key, request)
+                    
+                    self.logger.info(f"已将{len(resources_with_page)}个资源添加到资源爬取队列: {resource_redis_key}")
+                
+                return item
+                
+        except Exception as e:
+            self.logger.error(f"保存内容失败: {str(e)}")
+            raise DropItem(f"保存内容失败: {str(e)}")
+
+class ResourcePipeline(BasePipeline):
+    """处理资源爬虫的结果管道"""
+    
+    def __init__(self, redis_host, redis_port, redis_db):
+        super().__init__(redis_host, redis_port, redis_db)
+        self.component_matcher = None
+    
+    def open_spider(self, spider):
+        """爬虫启动时加载组件匹配器"""
+        super().open_spider(spider)
+        if spider.name == 'resource_spider':
+            self.component_matcher = ComponentMatcher()
+            try:
+                self.component_matcher.load_fingerprints()
+                self.logger.info("已加载组件指纹库")
+            except Exception as e:
+                self.logger.error(f"加载组件指纹库失败: {str(e)}")
+    
+    def process_item(self, item, spider):
+        """处理资源项，保存到数据库并进行指纹匹配"""
+        if not hasattr(spider, 'task_id') or not spider.task_id:
+            return item
+        
+        if spider.name != 'resource_spider':
+            return item
+        
+        try:
+            with transaction.atomic():
+                task_id = item['task_id']
+                task = CrawlerTask.objects.get(id=task_id)
+                
+                # 更新任务状态
+                if task.status == 'content_crawling':
+                    task.status = 'resource_crawling'
+                    task.save()
+                
+                # 查找对应的内容结果
+                try:
+                    result = CrawlerResult.objects.get(task=task, url=item['page_url'])
+                except CrawlerResult.DoesNotExist:
+                    self.logger.warning(f"找不到对应的内容结果: {item['page_url']}，使用任务作为关联")
+                    result = None
+                
+                # 保存资源到数据库
+                static_resource = StaticResource(
+                    task=task,
+                    result=result,
+                    url=item['url'],
+                    resource_type=item['resource_type'],
+                    content=item['content'] if item['content'] else None,
+                    md5_hash=item['md5_hash']
+                )
+                static_resource.save()
+                
+                # 更新任务计数
+                task.resources_crawled += 1
+                task.save()
+                
+                self.logger.info(f"已保存资源: {item['url']}, 类型: {item['resource_type']}, MD5: {item['md5_hash']}")
+                
+                # 进行指纹匹配
+                if self.component_matcher and self.component_matcher.loaded:
+                    # 为不同类型的资源选择不同的匹配方法
+                    if item['resource_type'] in ['js', 'css']:
+                        # 对于文本资源，使用内容进行匹配
+                        if item['content']:
+                            try:
+                                content_text = item['content'].decode('utf-8', errors='ignore')
+                                matches = self.component_matcher.match(content_text)
+                                
+                                # 保存匹配结果
+                                for component, keyword in matches:
+                                    IdentifiedComponent.objects.create(
+                                        task=task,
+                                        resource=static_resource,
+                                        component=component,
+                                        keyword=keyword,
+                                        match_type=item['resource_type']
+                                    )
+                                    task.components_identified += 1
+                                    task.save()
+                                
+                                static_resource.is_matched = True
+                                static_resource.save()
+                                
+                                self.logger.info(f"资源 {item['url']} 匹配到 {len(matches)} 个组件")
+                            except Exception as e:
+                                self.logger.error(f"资源内容匹配失败: {str(e)}")
+                    
+                    elif item['resource_type'] in ['image', 'ico']:
+                        # 对于二进制资源，使用MD5进行匹配
+                        if item['md5_hash']:
+                            # 如果有指纹MD5匹配功能，在这里实现
+                            pass
+                
+                return item
+                
+        except Exception as e:
+            self.logger.error(f"处理资源失败: {str(e)}")
+            raise DropItem(f"处理资源失败: {str(e)}")
+
+class FingerprintPipeline(BasePipeline):
+    """处理指纹匹配的管道"""
+    
+    def process_item(self, item, spider):
+        """处理指纹匹配"""
+        # 指纹匹配爬虫的结果直接处理为IdentifiedComponent对象
+        if not hasattr(spider, 'task_id') or not spider.task_id:
+            return item
             
-        return adapter.asdict()
+        if spider.name != 'fingerprint_matcher':
+            return item
+            
+        # 由于指纹匹配爬虫直接在数据库操作，不需要处理items
+        return item

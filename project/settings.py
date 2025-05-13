@@ -179,9 +179,10 @@ CACHES = {
     }
 }
 
-# Redis连接环境变量（用于各个组件访问）
+# Redis settings for distributed crawling
 import os
-os.environ.setdefault('REDIS_HOST', 'scrapyredis-redis.ns-6k0uv9r0.svc')
-os.environ.setdefault('REDIS_PORT', '6379')
-os.environ.setdefault('REDIS_USERNAME', 'default')
-os.environ.setdefault('REDIS_PASSWORD', '7sxxq74x')
+REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+REDIS_DB = int(os.environ.get('REDIS_DB', 0))
+REDIS_PASSWORD = os.environ.get('REDIS_PASSWORD', '')
+REDIS_USERNAME = os.environ.get('REDIS_USERNAME', '')

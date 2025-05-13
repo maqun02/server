@@ -7,33 +7,39 @@ import scrapy
 
 
 class LinkItem(scrapy.Item):
-    """链接爬取结果项"""
-    task_id = scrapy.Field()  # 关联的任务ID
-    url = scrapy.Field()  # 原始URL
+    """
+    链接爬虫的数据项 - 存储网页中的链接信息
+    """
+    task_id = scrapy.Field()  # 任务ID
+    url = scrapy.Field()  # 页面URL
     internal_links = scrapy.Field()  # 内链列表
     external_links = scrapy.Field()  # 外链列表
     internal_nofollow_links = scrapy.Field()  # 内链nofollow列表
     external_nofollow_links = scrapy.Field()  # 外链nofollow列表
-    status = scrapy.Field()  # 状态码
 
 
 class ContentItem(scrapy.Item):
-    """内容爬取结果项"""
-    task_id = scrapy.Field()  # 关联的任务ID
-    url = scrapy.Field()  # 原始URL
-    title = scrapy.Field()  # 网页标题
-    headers = scrapy.Field()  # 响应头
-    html_content = scrapy.Field()  # HTML内容
-    status = scrapy.Field()  # 状态码
-    static_resources = scrapy.Field()  # 静态资源链接列表
+    """
+    内容爬虫的数据项 - 存储网页内容
+    """
+    task_id = scrapy.Field()  # 任务ID
+    url = scrapy.Field()  # 页面URL
+    title = scrapy.Field()  # 页面标题
+    html_source = scrapy.Field()  # HTML源码
+    headers = scrapy.Field()  # HTTP响应头
+    resources = scrapy.Field()  # 静态资源列表 [{url, type}, ...]
+    error = scrapy.Field()  # 错误信息（如有）
 
 
-class StaticResourceItem(scrapy.Item):
-    """静态资源爬取结果项"""
-    task_id = scrapy.Field()  # 关联的任务ID
+class ResourceItem(scrapy.Item):
+    """
+    资源爬虫的数据项 - 存储静态资源内容
+    """
+    task_id = scrapy.Field()  # 任务ID
+    page_url = scrapy.Field()  # 所属页面URL
     url = scrapy.Field()  # 资源URL
-    content_url = scrapy.Field()  # 来源内容页URL
-    resource_type = scrapy.Field()  # 资源类型: js, css, image, ico等
+    resource_type = scrapy.Field()  # 资源类型：js, css, image, ico, other
     content = scrapy.Field()  # 资源内容
-    md5 = scrapy.Field()  # MD5哈希值 (用于图片和ico)
-    status = scrapy.Field()  # 状态码
+    md5_hash = scrapy.Field()  # MD5哈希值
+    headers = scrapy.Field()  # 资源响应头
+    error = scrapy.Field()  # 错误信息（如有）

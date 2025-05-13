@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
 
 class CrawlerTask(models.Model):
     """
@@ -18,6 +19,7 @@ class CrawlerTask(models.Model):
         ('fingerprint_matching', '指纹匹配中'), # 第四阶段：进行指纹匹配
         ('completed', '已完成'),
         ('failed', '失败'),
+        ('timeout', '已超时'),  # 新增状态：任务超时
     )
     
     url = models.URLField(max_length=255, verbose_name='目标URL')
@@ -28,6 +30,11 @@ class CrawlerTask(models.Model):
     ended_at = models.DateTimeField(null=True, blank=True, verbose_name='结束时间')
     depth = models.IntegerField(default=2, verbose_name='爬取深度（已废弃）')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    
+    # 超时设置
+    task_timeout = models.IntegerField(default=1800, verbose_name='任务超时时间(秒)')  # 默认30分钟
+    link_timeout = models.IntegerField(default=30, verbose_name='单个链接超时时间(秒)')  # 默认30秒
+    resource_timeout = models.IntegerField(default=15, verbose_name='单个资源超时时间(秒)')  # 默认15秒
     
     # 新增任务跟踪字段
     links_found = models.IntegerField(default=0, verbose_name='发现的链接数')
@@ -67,6 +74,14 @@ class CrawlerTask(models.Model):
             return 90
         elif self.status == 'completed':
             return 100
-        elif self.status == 'failed':
-            return -1  # 表示失败
+        elif self.status in ['failed', 'timeout']:
+            return -1  # 表示失败或超时
         return 0
+        
+    def is_task_timeout(self):
+        """检查任务是否已超时"""
+        if not self.started_at:
+            return False
+        
+        elapsed_time = timezone.now() - self.started_at
+        return elapsed_time.total_seconds() > self.task_timeout
